@@ -1,0 +1,69 @@
+I have written some details in the comments that I may not 
+necessarily go over twice, but I will go over the overall logic of all the code
+
+I mainly used the book as a reference for most of the code(and a lot trial and error)
+
+# FUNCTIONS
+## EVAL
+We use the parseline function to put the inputted command line into the argv array of strings
+Making sure it's not empty, and we will use the return value of parseline to figure out if the process to run will be a background task or not
+
+Then we check if the first argument is a built in function, the function will return 1 if it is and run the command, so we can use that to call the function and then check if it ran or not, if not then we will move on, otherwise eval will return
+
+If the function is not a built in function then we will enter a condition
+since the function is not a built in function then it is either an exectubale, or just a file that does not exist, if it is a runnable exe we want to execute it in a child proccess, so that we can easily use execve and we can run it in the background and go on with other processes
+
+before forking we will block the SIGCHLD signal to prevent the race condition where the child terminated before the parent can add it to the job list, this is particularly bad because we want to use the signal to remove the child from the joblist
+
+we will then fork the child process, creating its own groupid since we don't want it in the same group as the shell, then we will try to run the first command in argv, checking if it exists, if it does it will run it using execve, ending the path of the child, otherwise an error will be printed and the child manually exited. we will also make sure to unblock the child signal from inside the forked path since the child inherits the parent's blocked bits
+
+Now in the parents path we will add the child to the job id and check if it is a background job, if it is we need to print out the details of it and then continue running the code, as the child will do the process and the parent(the shell) will move on to other things.
+
+If it is a FG job the parent will wait for it to finish before moving on
+The child signal should be unblocked before waiting for the FG job, so that it can benefit from it
+
+
+## BUILTIN_CMD
+Here we will simply check if the first argument of argv matches with any builtin commands, and if they are return 1, so that the previous functions can get use out of this5
+
+quit: this will simply exit the shell using exit()
+jobs: this will call the already implemented listjobs() function, that will, of course, list the jobs
+bg or fg: First of all it is checked that there is second argument, if there is then the function do_bgfg(), is called instead
+
+
+## DO_BGFG
+The second argument is checked for several things, first of all if it's a number that means it's just a pid, if it's a % followed a number, that means the number is the jid, otherwise it is invalid, we will use strtol to convert and check aswell for all of this, as it returns 0(impossible PID and JID in our usecase) if it's not a number
+We then will check if the job even exists, throwing an error if it doesn't
+Otherwise if it's not a stopped or background job, neither of these functions would change anything so we just return
+
+Now for the functions, for BG we will simply send a SIGCONT to the job and change its state to background, as for FG we will send it a continue signal and then change its state to foreground and then wait for it to finish running, this works because even if we send a SIGCONT to an already running task nothing will happen, making our implementation simpler
+
+
+## WAIT_FG
+This function just wait for the current forground job to finish, we will make a loop where it checks that the pid of the foreground the job is still the same and loop will just contain a sleep to pad, in the sleep loop it's stil allowed for signals to go through so they will terminate the job when necessary
+
+
+# SIGNAL_HANDLERS
+At first I was doing everything in the SIGINT and SIGSTOP handler, but there were some errors so i decided to centralise by only using those for sending the signal while handling the signal itself in the SIGCHLD handler, this reduces the race conditions, and works better when recieveing multiple signals at the same time since both of the other signals are handeled within a loop, so they can come at the same time and they won't work on old data
+
+
+## SIGINT
+This one is the simplest, it checks if there is a foreground job, if there is it sends a signal to terminate its entire group 
+
+## SIGSTP
+In this one we will check if there exists a foreground job, and if there is we will check if it is already stopped, which is unlikly, but is done just in case.
+
+## SIGCHLD
+Here is where everything happens, we will use waitpid(-1, &status, WNOHANG | WUNTRACED) > 0 in a loop, the -1 means it will look for all the children of the parents not a specific one, status will record the reason for the calling of waitpid, WNOHANG is used to make sure it doesn't actually "wait", if there exists a child waiting to be reaped it will reap them, otherwise it will return 0(hence the > 0), the WUNTRACED means that it will return when there are stopped children aswell.
+
+To put it all together the loop will check for any children waiting to be processed, if they are stopped or terminated, either way it will return the status in &status, it will do this as long as there are pending children and if there aren't any it will immediately exit, this is so that it can just handle what we want it to handle and then go back to the code immediately, we don't actually want to wait for anything.
+
+in the loop body we check three conditions we expect to happen to the child, either they are exited normally using an exit() function or finishing main, this will be checked with WIFEXITED, in this case we will simply delete the child from the job list
+
+We will use WIFSIGNALED to check if the child has been terminated using the SIGINT signal, if it was we will also delete it from the joblist, while printing out that it was terminated with the signal(using safe functions of course)
+
+Finally we will use a WIFSTOPPED to check if it was stopped with a SIGSTP signal, if it was, we will change its state to stopped in the joblist, and also print out that it was stopped with a signal
+
+If none of these are the reason for waitpit exececuting then we will throw a unix error
+
+
