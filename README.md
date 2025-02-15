@@ -1,7 +1,3 @@
 # tinyShell
 
-A mini unix shell that has the following functionalities:
-1)
-2)
-3)
-4)
+A mini unix shell which can: Run executables in the forground or background(built-in or otherwise), interpret signals such as ctrl+c or ctrl+z, and list out the current running processes
